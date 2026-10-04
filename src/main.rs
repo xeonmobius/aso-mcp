@@ -18,9 +18,11 @@ mod itunes;
 mod mzstore;
 mod play;
 mod scoring;
+mod store;
 
 pub struct Ctx {
     http: http::HttpClient,
+    history: store::History,
 }
 
 #[derive(Clone)]
@@ -179,12 +181,24 @@ pub struct KeywordReportArgs {
     pub platform: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct TrackDiffArgs {
+    /// Apple numeric app IDs to diff
+    pub apple_ids: Option<Vec<String>>,
+    /// Play package names to diff
+    pub play_ids: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct TrackListArgs {}
+
 #[tool_router]
 impl Asomcp {
     pub fn new() -> Self {
         Self {
             ctx: Arc::new(Ctx {
                 http: http::HttpClient::new().expect("HTTP client"),
+                history: store::History::open().expect("history db"),
             }),
             tool_router: Self::tool_router(),
         }
@@ -238,6 +252,19 @@ impl Asomcp {
         )
         .await
         .map_err(err)?;
+        for app in &apps {
+            let _ = self.ctx.history.save(&store::Snapshot {
+                store: "apple".into(),
+                app_id: app.track_id.to_string(),
+                title: app.track_name.clone(),
+                seller: app.seller_name.clone(),
+                price: Some(app.formatted_price.clone()),
+                rating: app.average_user_rating,
+                rating_count: app.user_rating_count,
+                description_hash: store::fnv1a(&app.description),
+                fetched_at: store::now_secs(),
+            });
+        }
         to_result(&apps)
     }
 
@@ -390,6 +417,17 @@ impl Asomcp {
         )
         .await
         .map_err(err)?;
+        let _ = self.ctx.history.save(&store::Snapshot {
+            store: "play".into(),
+            app_id: details.package.clone(),
+            title: details.title.clone(),
+            seller: details.developer.clone(),
+            price: None,
+            rating: details.rating,
+            rating_count: details.reviews_count,
+            description_hash: store::fnv1a(&details.description),
+            fetched_at: store::now_secs(),
+        });
         to_result(&details)
     }
 
@@ -465,6 +503,47 @@ impl Asomcp {
             .map(|(phrase, count)| json!({ "phrase": phrase, "apps": count }))
             .collect();
         to_result(&json!({ "term": args.term, "apps_analyzed": apps.len(), "phrases": out }))
+    }
+
+    #[tool(description = "Diff tracked competitors' metadata against their previous snapshot: title/seller/price/description changes plus rating-count velocity. Snapshots accumulate automatically from appstore_lookup and play_app_details calls. Run those on your watch list weekly, then run this.")]
+    async fn track_diff(
+        &self,
+        Parameters(args): Parameters<TrackDiffArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut results: Vec<serde_json::Value> = Vec::new();
+        for id in args.apple_ids.unwrap_or_default() {
+            let d = self
+                .ctx
+                .history
+                .diff("apple", &id)
+                .map_err(err)?;
+            results.push(serde_json::to_value(&d).map_err(err)?);
+        }
+        for id in args.play_ids.unwrap_or_default() {
+            let d = self.ctx.history.diff("play", &id).map_err(err)?;
+            results.push(serde_json::to_value(&d).map_err(err)?);
+        }
+        to_result(&json!({ "results": results }))
+    }
+
+    #[tool(description = "List tracked apps with their snapshot counts and last-seen time.")]
+    async fn track_list(
+        &self,
+        Parameters(_args): Parameters<TrackListArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let tracked = self.ctx.history.tracked().map_err(err)?;
+        let out: Vec<serde_json::Value> = tracked
+            .into_iter()
+            .map(|(store, app_id, count, last_seen)| {
+                json!({
+                    "store": store,
+                    "app_id": app_id,
+                    "snapshots": count,
+                    "last_seen_unix": last_seen,
+                })
+            })
+            .collect();
+        to_result(&json!({ "tracked": out }))
     }
 
     #[tool(description = "Merged keyword report across seeds: runs discovery (autocomplete hints where available) + difficulty scoring per seed and returns a markdown table with target/maybe/skip verdicts. platform: 'apple', 'play', or 'both'. Slow: ~2-7 network calls per seed.")]

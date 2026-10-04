@@ -17,6 +17,7 @@ as a local MCP server (Rust, stdio). Free data sources only — no accounts, no 
 | `play_analyze_keyword` | Play | difficulty 0–100 (title match + review floor) |
 | `play_app_details` | Play | full listing details |
 | `play_competitor_keywords` | Play | competitor title phrases |
+| `track_diff` / `track_list` | both | competitor metadata change tracking (SQLite at `~/.aso-mcp/history.db`) |
 | `keyword_report` | both | merged markdown report with target/maybe/skip verdicts |
 | `version` | — | server version |
 
@@ -61,6 +62,14 @@ Restart the client; you should see the `aso-mcp` tools. Smoke-test with the
 4. `keyword_report` → one table, target/maybe/skip verdicts.
 5. Optional popularity spot-checks: see `docs/volume-sources.md` (Apple planner 5–100,
    Google Keyword Planner ranges — both manual, both free).
+
+## Competitor watch loop
+
+Every `appstore_lookup` / `play_app_details` call snapshots metadata to
+`~/.aso-mcp/history.db` (~250 bytes/row). Weekly: call lookup/details on your
+5–10 watched apps, then `track_diff` — it reports title/price/description changes
+and rating-count velocity per app. A competitor's title rewrite = a keyword they
+found; run `appstore_analyze_keyword` on the new phrase.
 
 ## Docs
 
