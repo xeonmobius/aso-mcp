@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "aso-mcp": {
+      "command": "/Users/shannonchowdhury/Documents/Keywords MCP/target/release/aso-mcp"
+    }
+  }
+}

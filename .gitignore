@@ -1,0 +1,8 @@
+target/
+reference/
+.env
+
+
+# Added by cargo
+
+/target
