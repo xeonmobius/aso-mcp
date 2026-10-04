@@ -8,9 +8,19 @@ use crate::mzstore;
 /// XML plist `{"title": "Suggestions", "hints": [{"displayTerm": ..., "term": ...}]}`.
 /// The endpoint returns structurally-valid but EMPTY hints without a storefront header
 /// (verified live), so we send storefront headers and fall back across param variants.
-pub async fn keyword_hints(http: &HttpClient, term: &str, storefront: &str) -> Result<Vec<String>> {
+pub async fn keyword_hints(
+    http: &HttpClient,
+    term: &str,
+    storefront: &str,
+    language: &str,
+) -> Result<Vec<String>> {
     let sid = mzstore::store_id_for(storefront);
     let encoded = itunes::urlencoded(term);
+    let lang = if language.is_empty() {
+        "en-us".to_string()
+    } else {
+        language.to_lowercase()
+    };
 
     let attempts: [(&str, String); 2] = [
         (
@@ -27,7 +37,7 @@ pub async fn keyword_hints(http: &HttpClient, term: &str, storefront: &str) -> R
         );
         let headers = [
             ("X-Apple-Store-Front", front),
-            ("Accept-Language", "en-us".to_string()),
+            ("Accept-Language", lang.clone()),
         ];
         let body = http.get(&url, &headers).await?;
         let hints = parse_hints(&body);

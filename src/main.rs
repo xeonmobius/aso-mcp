@@ -99,6 +99,8 @@ pub struct KeywordHintsArgs {
     pub term: String,
     /// Two-letter ISO country code (default US)
     pub country: Option<String>,
+    /// BCP-47 language like "en-us", "de-de", "ja-jp" (default en-us)
+    pub language: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -312,7 +314,7 @@ impl Asomcp {
         }))
     }
 
-    #[tool(description = "Get App Store search-bar autocomplete suggestions for a term (live long-tail keyword mining).")]
+    #[tool(description = "Get App Store search-bar autocomplete suggestions for a term (live long-tail keyword mining). Suggestions are input-script driven: for DE/JP/BR markets pass a localized seed (e.g. メディテーション, meditação) to get that market's suggestions; latin seeds return what latin-typing users there see.")]
     async fn appstore_keyword_hints(
         &self,
         Parameters(args): Parameters<KeywordHintsArgs>,
@@ -321,6 +323,7 @@ impl Asomcp {
             &self.ctx.http,
             &args.term,
             args.country.as_deref().unwrap_or("US"),
+            args.language.as_deref().unwrap_or("en-us"),
         )
         .await
         .map_err(err)?;
@@ -500,7 +503,7 @@ impl Asomcp {
                     }
                     Err(_) => None,
                 };
-                let hints = hints::keyword_hints(&self.ctx.http, seed, storefront)
+                let hints = hints::keyword_hints(&self.ctx.http, seed, storefront, "en-us")
                     .await
                     .unwrap_or_default();
                 if let Some(s) = summary {

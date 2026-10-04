@@ -39,3 +39,16 @@ app categories, exact for none. Treat as directional.
   ASO harvest.
 - **Apple Ads Keyword Planner** popularity scores (above) work before launch;
   first-party reports only exist after.
+
+## Localized keyword research (verified US/DE/JP/BR)
+
+Store autocomplete is **input-script driven**: the same endpoint returns each market's own
+suggestions when the seed is in that market's script. Verified live:
+
+- `meditation` in JP → English-titled suggestions (what latin-typing users see there)
+- `メディテーション` in JP → Japanese suggestions
+- `meditação` in BR → Portuguese suggestions
+
+Workflow: for each target market, run `appstore_keyword_hints` with the localized seed
+word, and `play_search`/`appstore_search_ranked` with `country` set. Localized keyword
+sets are typically far less competitive than the US cluster.
