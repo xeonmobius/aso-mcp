@@ -125,6 +125,103 @@ pub fn urlencoded(s: &str) -> String {
     out
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AppleReview {
+    pub id: String,
+    pub author: String,
+    pub score: u8,
+    pub title: String,
+    pub text: String,
+    pub version: String,
+    pub updated: String,
+}
+
+/// Apple customer reviews via the public RSS feed (no auth).
+/// Only `mostHelpful` sort is honored by Apple now (mostrecent returns empty
+/// as of Oct 2026); pages 1-10, ~50 reviews each.
+pub async fn reviews(
+    http: &HttpClient,
+    app_id: &str,
+    country: &str,
+    max: usize,
+) -> Result<Vec<AppleReview>> {
+    let cc = country.to_lowercase();
+    let mut out: Vec<AppleReview> = Vec::new();
+    for page in 1..=10u32 {
+        if out.len() >= max {
+            break;
+        }
+        let url = format!(
+            "https://itunes.apple.com/{cc}/rss/customerreviews/page={page}/id={app_id}/sortby=mostHelpful/json"
+        );
+        let body = match http.get(&url, &[]).await {
+            Ok(b) => b,
+            Err(_) => break, // 400/404 = past last page
+        };
+        let page_reviews = parse_rss_reviews(&body)?;
+        if page_reviews.is_empty() {
+            break;
+        }
+        out.extend(page_reviews);
+    }
+    out.truncate(max);
+    Ok(out)
+}
+
+pub fn parse_rss_reviews(body: &str) -> Result<Vec<AppleReview>> {
+    use serde_json::Value;
+    let v: Value = serde_json::from_str(body).context("parsing RSS feed")?;
+    let Some(entries) = v.get("feed").and_then(|f| f.get("entry")).and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    Ok(entries
+        .iter()
+        .filter_map(|e| {
+            let id = e.get("id")?.get("label")?.as_str()?.to_string();
+            let score = e
+                .get("im:rating")
+                .and_then(|r| r.get("label"))
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse::<u8>().ok())?;
+            Some(AppleReview {
+                id,
+                author: e
+                    .get("author")
+                    .and_then(|a| a.get("name"))
+                    .and_then(|n| n.get("label"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                score,
+                title: e
+                    .get("title")
+                    .and_then(|t| t.get("label"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                text: e
+                    .get("content")
+                    .and_then(|c| c.get("label"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                version: e
+                    .get("im:version")
+                    .and_then(|x| x.get("label"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                updated: e
+                    .get("updated")
+                    .and_then(|u| u.get("label"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

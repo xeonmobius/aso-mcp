@@ -42,6 +42,22 @@ impl HttpClient {
         Ok(body)
     }
 
+    pub async fn post(&self, url: &str, headers: &[(&str, String)], body: String) -> Result<String> {
+        self.pace().await;
+        let mut req = self.client.post(url).body(body);
+        for (k, v) in headers {
+            req = req.header(*k, v);
+        }
+        let resp = req.send().await.context("request failed")?;
+        let status = resp.status();
+        let text = resp.text().await.context("reading response body")?;
+        if !status.is_success() {
+            let snippet: String = text.chars().take(200).collect();
+            anyhow::bail!("HTTP {status}: {snippet}");
+        }
+        Ok(text)
+    }
+
     async fn pace(&self) {
         loop {
             let wait = {

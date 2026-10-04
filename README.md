@@ -18,6 +18,7 @@ as a local MCP server (Rust, stdio). Free data sources only — no accounts, no 
 | `play_app_details` | Play | full listing details |
 | `play_competitor_keywords` | Play | competitor title phrases |
 | `track_diff` / `track_list` | both | competitor metadata change tracking (SQLite at `~/.aso-mcp/history.db`) |
+| `app_reviews` | both | reviews + score histogram + frequent 1-2★ complaint phrases; logged & deduped to SQLite |
 | `keyword_report` | both | merged markdown report with target/maybe/skip verdicts |
 | `version` | — | server version |
 

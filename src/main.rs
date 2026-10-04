@@ -192,6 +192,20 @@ pub struct TrackDiffArgs {
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct TrackListArgs {}
 
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct AppReviewsArgs {
+    /// Which store: "apple" or "play"
+    pub store: String,
+    /// Apple numeric app ID or Play package name
+    pub app_id: String,
+    /// Two-letter ISO country code (default US)
+    pub country: Option<String>,
+    /// Language for Play reviews, e.g. "en" (default en)
+    pub language: Option<String>,
+    /// Max reviews to fetch, 1-500 (default 200)
+    pub max: Option<u32>,
+}
+
 #[tool_router]
 impl Asomcp {
     pub fn new() -> Self {
@@ -546,6 +560,65 @@ impl Asomcp {
         to_result(&json!({ "tracked": out }))
     }
 
+    #[tool(description = "Fetch customer reviews for an app (Apple via RSS feed, Play via web endpoint). Returns reviews with scores plus a score histogram and the most frequent 1-2 star phrases (complaint vocabulary -> keyword and positioning candidates). Reviews are logged to history.db (deduped by review ID) so repeated calls accumulate a review archive.")]
+    async fn app_reviews(
+        &self,
+        Parameters(args): Parameters<AppReviewsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let country = args.country.as_deref().unwrap_or("US");
+        let max = args.max.unwrap_or(200).clamp(1, 500) as usize;
+        let store_kind = args.store.to_lowercase();
+        if !["apple", "play"].contains(&store_kind.as_str()) {
+            return Err(McpError::invalid_params("store must be 'apple' or 'play'", None));
+        }
+
+        let reviews_json = match store_kind.as_str() {
+            "apple" => {
+                let reviews = itunes::reviews(&self.ctx.http, &args.app_id, country, max)
+                    .await
+                    .map_err(err)?;
+                let logged: Vec<(String, u8, String)> = reviews
+                    .iter()
+                    .map(|r| (r.id.clone(), r.score, format!("{} {}", r.title, r.text)))
+                    .collect();
+                let new_saved = self.ctx.history.save_reviews("apple", &args.app_id, &logged).unwrap_or(0);
+                let histogram = hist(&reviews.iter().map(|r| r.score as i64).collect::<Vec<_>>());
+                json!({
+                    "store": "apple", "app_id": args.app_id, "fetched": reviews.len(),
+                    "new_logged": new_saved,
+                    "histogram": histogram,
+                    "negative_phrases": negative_phrases(&reviews.iter().filter(|r| r.score <= 2).map(|r| (r.title.as_str(), r.text.as_str())).collect::<Vec<_>>()),
+                    "reviews": reviews,
+                })
+            }
+            _ => {
+                let reviews = play::reviews(
+                    &self.ctx.http,
+                    &args.app_id,
+                    country,
+                    args.language.as_deref().unwrap_or("en"),
+                    max,
+                )
+                .await
+                .map_err(err)?;
+                let logged: Vec<(String, u8, String)> = reviews
+                    .iter()
+                    .map(|r| (r.id.clone(), r.score, r.text.clone()))
+                    .collect();
+                let new_saved = self.ctx.history.save_reviews("play", &args.app_id, &logged).unwrap_or(0);
+                let histogram = hist(&reviews.iter().map(|r| r.score as i64).collect::<Vec<_>>());
+                json!({
+                    "store": "play", "app_id": args.app_id, "fetched": reviews.len(),
+                    "new_logged": new_saved,
+                    "histogram": histogram,
+                    "negative_phrases": negative_phrases(&reviews.iter().filter(|r| r.score <= 2).map(|r| ("", r.text.as_str())).collect::<Vec<_>>()),
+                    "reviews": reviews,
+                })
+            }
+        };
+        to_result(&reviews_json)
+    }
+
     #[tool(description = "Merged keyword report across seeds: runs discovery (autocomplete hints where available) + difficulty scoring per seed and returns a markdown table with target/maybe/skip verdicts. platform: 'apple', 'play', or 'both'. Slow: ~2-7 network calls per seed.")]
     async fn keyword_report(
         &self,
@@ -652,8 +725,55 @@ impl Asomcp {
     }
 }
 
-fn verdict(difficulty: f64, exact_ratio: f64, top5_median: i64) -> String {
-    let base = if difficulty < 35.0 {
+fn hist(scores: &[i64]) -> serde_json::Value {
+    let mut h = [0i64; 5];
+    for s in scores {
+        if (1..=5).contains(s) {
+            h[(s - 1) as usize] += 1;
+        }
+    }
+    json!({ "1": h[0], "2": h[1], "3": h[2], "4": h[3], "5": h[4] })
+}
+
+/// Frequent 1-3 word phrases across negative review text — complaint vocabulary.
+fn negative_phrases(texts: &[(&str, &str)]) -> Vec<serde_json::Value> {
+    const REVIEW_STOPWORDS: [&str; 46] = [
+        "this", "that", "have", "has", "had", "but", "they", "them", "their", "there", "with",
+        "was", "were", "are", "you", "your", "all", "can", "just", "would", "could", "what",
+        "when", "been", "than", "its", "it's", "even", "only", "also", "very", "will", "from",
+        "which", "who", "how", "get", "got", "one", "out", "not", "now", "use", "using", "used",
+        "the",
+    ];
+    let mut freq: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for (title, text) in texts {
+        let words: Vec<String> = format!("{title} {text}")
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .filter(|w| w.len() > 2 && !PHRASE_STOPWORDS.contains(w) && !REVIEW_STOPWORDS.contains(w))
+            .map(String::from)
+            .collect();
+        for n in 1..=3 {
+            for w in words.windows(n) {
+                *freq.entry(w.join(" ")).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut phrases: Vec<(String, u32)> = freq
+        .into_iter()
+        .filter(|(_, c)| *c >= 3)
+        .collect();
+    phrases.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    phrases
+        .into_iter()
+        .take(25)
+        .map(|(phrase, count)| json!({ "phrase": phrase, "count": count }))
+        .collect()
+}
+
+fn verdict(difficulty: f64, exact_ratio: f64, top5_median: i64) -> String {    let base = if difficulty < 35.0 {
         "TARGET"
     } else if difficulty <= 60.0 {
         "MAYBE"

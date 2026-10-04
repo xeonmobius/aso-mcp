@@ -462,9 +462,147 @@ pub async fn analyze_keyword(
     ))
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PlayReview {
+    pub id: String,
+    pub author: String,
+    pub score: u8,
+    pub text: String,
+    pub thumbs_up: i64,
+    pub timestamp_unix: i64,
+}
+
+/// Google Play reviews via batchexecute rpcid `oCPfdb`
+/// (verified against live endpoint; row layout: 0=id, 1=[name,..], 2=score,
+/// 4=text, 5=[unix,nanos], 6=thumbs; token at inner[1][1]).
+pub async fn reviews(
+    http: &HttpClient,
+    package: &str,
+    country: &str,
+    language: &str,
+    max: usize,
+) -> Result<Vec<PlayReview>> {
+    let mut out: Vec<PlayReview> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut token: Option<String> = None;
+
+    for _page in 0..10 {
+        let paging = match &token {
+            Some(t) => format!("[150,null,\"{}\"]", t.replace('\\', "\\\\").replace('"', "\\\"")),
+            None => "[150]".to_string(),
+        };
+        let payload = format!(
+            "[null,[2,2,{},null,null],[\"{}\",7]]",
+            paging,
+            package.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+        let envelope = format!(
+            "f.req={}",
+            crate::itunes::urlencoded(&json_string(&[[[
+                "oCPfdb".to_string(),
+                payload.clone(),
+                String::new(),
+                "generic".to_string(),
+            ]]]))
+        );
+        let url = format!(
+            "https://play.google.com/_/PlayStoreUi/data/batchexecute?rpcids=oCPfdb&hl={}&gl={}",
+            crate::itunes::urlencoded(language),
+            country.to_uppercase()
+        );
+        let body = http
+            .post(&url, &[("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8".to_string())], envelope)
+            .await?;
+
+        let (page_reviews, next_token) = parse_reviews_response(&body)?;
+        for r in page_reviews {
+            if seen.insert(r.id.clone()) {
+                out.push(r);
+            }
+        }
+        match next_token {
+            Some(t) if out.len() < max => token = Some(t),
+            _ => break,
+        }
+    }
+    out.truncate(max);
+    Ok(out)
+}
+
+fn json_string<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_string(v).unwrap_or_default()
+}
+
+/// Strips the `)]}'` prefix, finds the `wrb.fr`/`oCPfdb` line, parses the
+/// inner JSON, and returns (reviews, next_page_token).
+pub fn parse_reviews_response(body: &str) -> Result<(Vec<PlayReview>, Option<String>)> {
+    let mut reviews = Vec::new();
+    let mut token = None;
+    for line in body.lines() {
+        if !line.contains("\"wrb.fr\"") || !line.contains("oCPfdb") {
+            continue;
+        }
+        let outer: Value = serde_json::from_str(line)
+            .with_context(|| format!("parsing batchexecute line: {line:.120}"))?;
+        let Some(inner_str) = outer.get(0).and_then(|w| w.get(2)).and_then(Value::as_str) else {
+            continue;
+        };
+        let inner: Value = serde_json::from_str(inner_str)
+            .with_context(|| format!("parsing inner payload: {inner_str:.120}"))?;
+        for row in inner.get(0).and_then(Value::as_array).into_iter().flatten() {
+            let id = row.get(0).and_then(Value::as_str).unwrap_or_default().to_string();
+            if id.is_empty() {
+                continue;
+            }
+            reviews.push(PlayReview {
+                id,
+                author: row
+                    .get(1)
+                    .and_then(|a| a.get(0))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                score: row.get(2).and_then(Value::as_u64).unwrap_or(0) as u8,
+                text: row
+                    .get(4)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                thumbs_up: row.get(6).and_then(Value::as_i64).unwrap_or(0),
+                timestamp_unix: row
+                    .get(5)
+                    .and_then(|t| t.get(0))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+            });
+        }
+        token = inner
+            .get(1)
+            .and_then(|t| t.get(1))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        break;
+    }
+    Ok((reviews, token))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reviews_response_fixture() {
+        let body = ")]}'\n\n[[\"er\",2]]\n[[\"wrb.fr\",\"oCPfdb\",\"[[[\\\"abc\\\",[\\\"Ann\\\"],5,null,\\\"great app\\\",[1790566706,0],3]],[null,\\\"TOKEN1\\\"]]\",null,\"generic\"]]\n";
+        let (reviews, token) = parse_reviews_response(body).unwrap();
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(reviews[0].id, "abc");
+        assert_eq!(reviews[0].author, "Ann");
+        assert_eq!(reviews[0].score, 5);
+        assert_eq!(reviews[0].text, "great app");
+        assert_eq!(reviews[0].thumbs_up, 3);
+        assert_eq!(reviews[0].timestamp_unix, 1790566706);
+        assert_eq!(token.as_deref(), Some("TOKEN1"));
+    }
 
     #[test]
     fn package_like() {

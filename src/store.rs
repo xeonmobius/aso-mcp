@@ -216,6 +216,44 @@ impl History {
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
+
+    pub fn save_reviews(&self, store: &str, app_id: &str, reviews: &[(String, u8, String)]) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS review_log (
+                id INTEGER PRIMARY KEY,
+                store TEXT NOT NULL,
+                app_id TEXT NOT NULL,
+                review_id TEXT NOT NULL,
+                score INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                fetched_at INTEGER NOT NULL,
+                UNIQUE(store, app_id, review_id)
+            );",
+        )?;
+        let now = now_secs();
+        let mut saved = 0;
+        for (review_id, score, text) in reviews {
+            saved += conn
+                .execute(
+                    "INSERT OR IGNORE INTO review_log (store, app_id, review_id, score, text, fetched_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![store, app_id, review_id, score, text, now],
+                )
+                .context("inserting review")?;
+        }
+        Ok(saved)
+    }
+
+    pub fn review_stats(&self, store: &str, app_id: &str) -> Result<(i64, i64)> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*), MIN(fetched_at) FROM review_log WHERE store = ?1 AND app_id = ?2",
+            rusqlite::params![store, app_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .context("review stats")
+    }
 }
 
 /// Stable 64-bit hash for change detection (FNV-1a). Not cryptographic; fine here.
