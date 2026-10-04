@@ -22,12 +22,36 @@ as a local MCP server (Rust, stdio). Free data sources only — no accounts, no 
 
 ## Setup
 
+Prerequisite: [Rust](https://rustup.rs) (any recent stable).
+
 ```sh
-cargo build --release          # binary at target/release/aso-mcp (~3 MB)
+git clone https://github.com/xeonmobius/aso-mcp.git
+cd aso-mcp
+cargo install --path .     # builds and puts `aso-mcp` on your PATH (~/.cargo/bin)
 ```
 
-`.mcp.json` (already present) registers it at project scope for ZCode. For Claude Desktop /
-Claude Code, point the same command at the binary.
+No accounts, no API keys. Register with your MCP client:
+
+**ZCode** — `.mcp.json` at the project root:
+
+```json
+{ "mcpServers": { "aso-mcp": { "command": "aso-mcp" } } }
+```
+
+**Claude Code:**
+
+```sh
+claude mcp add aso-mcp --scope user -- aso-mcp
+```
+
+**Claude Desktop** — `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "aso-mcp": { "command": "aso-mcp" } } }
+```
+
+Restart the client; you should see the `aso-mcp` tools. Smoke-test with the
+`version` tool.
 
 ## Workflow (finding growth keywords)
 
