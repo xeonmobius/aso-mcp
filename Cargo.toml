@@ -2,6 +2,13 @@
 name = "aso-mcp"
 version = "0.1.0"
 edition = "2024"
+description = "ASO keyword research MCP server: App Store & Google Play keyword discovery, ranking, and difficulty analysis for LLM clients"
+license = "MIT"
+repository = "https://github.com/xeonmobius/aso-mcp"
+homepage = "https://github.com/xeonmobius/aso-mcp"
+readme = "README.md"
+keywords = ["aso", "mcp", "app-store", "google-play", "seo"]
+categories = ["development-tools"]
 
 [dependencies]
 anyhow = "1.0.104"
